@@ -12,7 +12,7 @@ class IconBodyLabel(BodyLabel):
 
     def __init__(self, text: str, icon: "FluentIconBase", parent=None, size: int = 16):
         super().__init__(parent)
-        self.size = size
+        self.iconSize = size
         self.setText(text)
         self.setContentsMargins(size + 4, 0, 0, 2)  # 给 Icon 和 Text 之间留出 4px 的间距
         self.setMinimumHeight(size)
@@ -28,7 +28,7 @@ class IconBodyLabel(BodyLabel):
         # iconKey = (id(self.icon), self.size)
         iconKey = id(self.icon)
         if iconKey not in self._iconCache:
-            self._iconCache[iconKey] = self.icon.icon().pixmap(self.size, self.size)
+            self._iconCache[iconKey] = self.icon.icon().pixmap(self.iconSize, self.iconSize)
         return iconKey
 
     def paintEvent(self, event):
@@ -36,7 +36,7 @@ class IconBodyLabel(BodyLabel):
 
         painter = QPainter(self)
         painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
-        yOffset = (self.height() - self.size) // 2
+        yOffset = (self.height() - self.iconSize) // 2
         painter.drawPixmap(0, yOffset, self._iconCache.get(self.cachedIconKey, self.preCacheIcon()))
 
     @classmethod
