@@ -89,3 +89,4 @@ body:
   attributes:
      label: 备注
      description: 添加你认为必要的其他信息, 比如是否愿意提交 Pull Request 来修复这个问题
+     render: markdown

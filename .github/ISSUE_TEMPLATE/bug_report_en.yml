@@ -89,3 +89,4 @@ body:
   attributes:
      label: Additional context
      description: Add any other information you think is helpful, such as whether you would like to submit a pull request to fix this issue
+     render: markdown
