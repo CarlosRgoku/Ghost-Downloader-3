@@ -783,21 +783,32 @@ def _readLocalTorrentBytes(source: str) -> bytes:
     return torrentPath.resolve().read_bytes()
 
 
-async def _resolveMagnetMetadata(payload: dict) -> tuple[lt.torrent_info, list[str], bytes]:
-    url = str(payload["url"]).strip()
-    proxies = payload.get("proxies", getProxies())
-    enableDHT = bittorrentConfig.enableDHT.value
-    enableWebTrackers = bittorrentConfig.enableWebTrackers.value
-    initialWebTrackers = getCachedWebTrackers() if enableWebTrackers else []
+def _resolveMagnetMetadataBlocking(
+    url: str,
+    *,
+    proxies: dict | None,
+    enableDHT: bool,
+    enableLSD: bool,
+    enableUPnP: bool,
+    enableNATPMP: bool,
+    listenPort: int,
+    connectionsLimit: int,
+    downloadRateLimit: int,
+    uploadRateLimit: int,
+    metadataTimeout: int,
+    webTrackers: list[str],
+) -> tuple[lt.torrent_info, list[str], bytes]:
+    import time
+
     session = _createSession(
-        listenPort=bittorrentConfig.listenPort.value,
-        connectionsLimit=bittorrentConfig.connectionsLimit.value,
-        downloadRateLimit=bittorrentConfig.downloadRateLimit.value,
-        uploadRateLimit=bittorrentConfig.uploadRateLimit.value,
+        listenPort=listenPort,
+        connectionsLimit=connectionsLimit,
+        downloadRateLimit=downloadRateLimit,
+        uploadRateLimit=uploadRateLimit,
         enableDHT=enableDHT,
-        enableLSD=bittorrentConfig.enableLSD.value,
-        enableUPnP=bittorrentConfig.enableUPnP.value,
-        enableNATPMP=bittorrentConfig.enableNATPMP.value,
+        enableLSD=enableLSD,
+        enableUPnP=enableUPnP,
+        enableNATPMP=enableNATPMP,
         proxies=proxies,
         extraSettings={
             "announce_to_all_trackers": True,
@@ -806,34 +817,21 @@ async def _resolveMagnetMetadata(payload: dict) -> tuple[lt.torrent_info, list[s
     )
 
     params = lt.parse_magnet_uri(url)
-    params.trackers = mergeTrackers(params.trackers.copy(), initialWebTrackers)
+    params.trackers = mergeTrackers(params.trackers.copy(), webTrackers)
     _metadataTempPath().mkdir(parents=True, exist_ok=True)
     params.save_path = str(_metadataTempPath())
     params.storage_mode = _storageMode("sparse")
     params.flags = int(params.flags) | int(lt.torrent_flags.default_dont_download)
     params.flags = int(params.flags) | int(lt.torrent_flags.update_subscribe)
 
-    webTrackerTask: asyncio.Task[list[str]] | None = None
-    if enableWebTrackers and bittorrentConfig.autoRefreshWebTrackers.value:
-        webTrackerTask = asyncio.create_task(_resolveAdditionalTrackers())
-
     handle = session.add_torrent(params)
     session.resume()
     handle.resume()
-    knownTrackers = set(params.trackers)
-    appliedRefreshedTrackers = False
     _forceMetadataPeerDiscovery(handle, enableDHT=enableDHT)
 
     try:
-        deadline = asyncio.get_running_loop().time() + bittorrentConfig.metadataTimeout.value
-        while asyncio.get_running_loop().time() < deadline:
-            if webTrackerTask is not None and webTrackerTask.done() and not appliedRefreshedTrackers:
-                appliedRefreshedTrackers = True
-                refreshedTrackers = webTrackerTask.result()
-                params.trackers = mergeTrackers(params.trackers.copy(), refreshedTrackers)
-                if _addTrackersToHandle(handle, refreshedTrackers, knownTrackers):
-                    _forceMetadataPeerDiscovery(handle, enableDHT=enableDHT)
-
+        deadline = time.monotonic() + metadataTimeout
+        while time.monotonic() < deadline:
             alerts = list(session.pop_alerts())
             for alert in alerts:
                 if isinstance(alert, lt.metadata_received_alert):
@@ -851,18 +849,36 @@ async def _resolveMagnetMetadata(payload: dict) -> tuple[lt.torrent_info, list[s
                 if ti is not None and ti.is_valid():
                     return ti, params.trackers.copy(), _torrentBytesFromInfo(ti)
 
-            await asyncio.sleep(0.2)
+            time.sleep(0.2)
 
         raise TimeoutError("等待 magnet 元数据超时")
     finally:
-        if webTrackerTask is not None and not webTrackerTask.done():
-            webTrackerTask.cancel()
-            with suppress(asyncio.CancelledError):
-                await webTrackerTask
         try:
             session.remove_torrent(handle)
         except Exception:
             pass
+
+
+async def _resolveMagnetMetadata(payload: dict) -> tuple[lt.torrent_info, list[str], bytes]:
+    url = str(payload["url"]).strip()
+    proxies = payload.get("proxies", getProxies())
+    enableDHT = bittorrentConfig.enableDHT.value
+    webTrackers = await _resolveAdditionalTrackers()
+    return await asyncio.to_thread(
+        _resolveMagnetMetadataBlocking,
+        url,
+        proxies=proxies,
+        enableDHT=enableDHT,
+        enableLSD=bittorrentConfig.enableLSD.value,
+        enableUPnP=bittorrentConfig.enableUPnP.value,
+        enableNATPMP=bittorrentConfig.enableNATPMP.value,
+        listenPort=bittorrentConfig.listenPort.value,
+        connectionsLimit=bittorrentConfig.connectionsLimit.value,
+        downloadRateLimit=bittorrentConfig.downloadRateLimit.value,
+        uploadRateLimit=bittorrentConfig.uploadRateLimit.value,
+        metadataTimeout=bittorrentConfig.metadataTimeout.value,
+        webTrackers=webTrackers,
+    )
 
 
 def buildTaskFromTorrentInfo(
